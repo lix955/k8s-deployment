@@ -1,0 +1,67 @@
+FROM jenkins/inbound-agent:latest-jdk17
+USER root
+
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ENV HTTP_PROXY=$HTTP_PROXY
+ENV HTTPS_PROXY=$HTTPS_PROXY
+
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    ca-certificates \
+    containerd \
+	procps \
+    uidmap \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV HTTP_PROXY=
+ENV HTTPS_PROXY=
+
+COPY nerdctl-1.7.6-linux-amd64.tar.gz /tmp/
+RUN tar -C /usr/local/bin -xzf /tmp/nerdctl-1.7.6-linux-amd64.tar.gz \
+    && rm /tmp/nerdctl-1.7.6-linux-amd64.tar.gz
+
+COPY buildkit-v0.12.5.linux-amd64.tar.gz /tmp/
+RUN tar -C /usr/local -xzf /tmp/buildkit-v0.12.5.linux-amd64.tar.gz \
+    && rm /tmp/buildkit-v0.12.5.linux-amd64.tar.gz
+
+RUN mkdir -p /var/lib/containerd /run/containerd /run/buildkit /etc/buildkit \
+    && containerd config default > /etc/containerd/config.toml \
+    && chmod -R 777 /var/lib/containerd /run/containerd /run/buildkit /etc/buildkit
+
+RUN echo '[registry."docker.io"]' > /etc/buildkit/buildkitd.toml \
+    && echo '  mirrors = ["https://docker.1ms.run"]' >> /etc/buildkit/buildkitd.toml \
+    && echo '[registry."gcr.io"]' >> /etc/buildkit/buildkitd.toml \
+    && echo '  mirrors = ["gcr.mirrors.ustc.edu.cn"]' >> /etc/buildkit/buildkitd.toml \
+    && echo '[registry."k8s.gcr.io"]' >> /etc/buildkit/buildkitd.toml \
+    && echo '  mirrors = ["k8s-gcr.mirrors.ustc.edu.cn"]' >> /etc/buildkit/buildkitd.toml \
+    && echo '[registry."quay.io"]' >> /etc/buildkit/buildkitd.toml \
+    && echo '  mirrors = ["quay.mirrors.ustc.edu.cn"]' >> /etc/buildkit/buildkitd.toml
+
+
+RUN echo '#!/bin/bash' > /usr/local/bin/start-services.sh \
+    && echo 'echo "启动containerd..."' >> /usr/local/bin/start-services.sh \
+    && echo 'containerd > /var/log/containerd.log 2>&1 &' >> /usr/local/bin/start-services.sh \
+    && echo 'sleep 2' >> /usr/local/bin/start-services.sh \
+    && echo 'if ! pgrep containerd > /dev/null; then' >> /usr/local/bin/start-services.sh \
+    && echo '  echo "containerd启动失败，日志如下:"' >> /usr/local/bin/start-services.sh \
+    && echo '  cat /var/log/containerd.log' >> /usr/local/bin/start-services.sh \
+    && echo '  exit 1' >> /usr/local/bin/start-services.sh \
+    && echo 'fi' >> /usr/local/bin/start-services.sh \
+    && echo '' >> /usr/local/bin/start-services.sh \
+    && echo 'echo "启动buildkitd..."' >> /usr/local/bin/start-services.sh \
+    && echo 'buildkitd --addr unix:///run/buildkit/buildkitd.sock > /var/log/buildkitd.log 2>&1 &' >> /usr/local/bin/start-services.sh \
+    && echo 'sleep 2' >> /usr/local/bin/start-services.sh \
+    && echo 'if ! pgrep buildkitd > /dev/null; then' >> /usr/local/bin/start-services.sh \
+    && echo '  echo "buildkitd启动失败，日志如下:"' >> /usr/local/bin/start-services.sh \
+    && echo '  cat /var/log/buildkitd.log' >> /usr/local/bin/start-services.sh \
+    && echo '  exit 1' >> /usr/local/bin/start-services.sh \
+    && echo 'fi' >> /usr/local/bin/start-services.sh \
+    && echo '' >> /usr/local/bin/start-services.sh \
+    && echo 'echo "以root用户启动Jenkins Agent"' >> /usr/local/bin/start-services.sh \
+    && echo 'exec /usr/local/bin/jenkins-agent "$@"' >> /usr/local/bin/start-services.sh \
+    && chmod +x /usr/local/bin/start-services.sh
+
+USER root
+ENTRYPOINT ["/usr/local/bin/start-services.sh"]
